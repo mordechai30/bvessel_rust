@@ -1,0 +1,66 @@
+# Host/shader layout and transfers
+
+## ABI
+
+- Validate logical counts, checked byte sizes, offsets, and usages before allocation/upload. Define the
+  representation, serialize valid records, bind intended ranges, encode dependencies, and submit.
+- Use a shader-aware serializer for nested, variable, or representation-changing records. Use raw bytes for
+  a fixed ABI only after checking member offsets, size, stride, matrix columns, and address-space rules;
+  make Rust padding explicit and byte-safe. Preserve an existing verified layout rather than replacing it
+  solely to introduce a serializer.
+- Treat Pod as a Rust byte-validity contract, not proof of shader compatibility. Derive it only when its
+  field/padding/interior-mutability requirements hold; manual impls cannot waive them. Serialized records
+  need not implement Pod. Use NoUninit-like write guarantees only when the operation needs no reverse cast.
+- Check size_of/offset_of and actual serialized bytes against the shader; math types/arrays are not
+  automatically shader aligned. Do not impose a universal 16-byte uniform buffer or CPU-address alignment
+  requirement.
+- For f32/i32/u32, use scalar alignment/size 4/4, vec2 8/8, vec3 16/12, vec4 16/16, mat3x3 16/48,
+  and mat4x4 16/64. Place members at rounded alignment and round struct size to maximum member alignment.
+- Permit a scalar after vec3 at offset 12, but retain vec3 array stride 16. Keep matrix columns padded.
+  Compute natural array stride as round_up(element alignment, element size); do not substitute a device
+  dynamic-binding alignment for a WGSL array stride.
+- Without verified uniform_buffer_standard_layout, preserve uniform array stride multiples of 16 and
+  extra nested-struct spacing. Check Naga/backend language support before selecting relaxed layouts.
+- Use u32 flags instead of buffer bool. Place runtime arrays only in legal storage positions; arrayLength
+  reports bound capacity, not necessarily live records. Pass logical counts separately when they differ.
+- Separate vertex decode from storage layout: Float32x3 can have stride 12 while array<vec3<f32>> has 16.
+  Assign a whole packed word to one invocation; separate half-word writes can race on the same memory word.
+
+## Upload and staging choice
+
+- Initialize fixed buffers with DeviceExt::create_buffer_init or mapped creation. Start small CPU updates
+  with Queue::write_buffer; batch adjacent dirty records. Compare write_buffer_with for direct generation
+  into write-only staging, and measured belt/pool reuse for recurring allocation/streaming costs.
+- Account for native/unified-memory and browser/Wasm copy differences; do not prescribe universal size
+  thresholds.
+- For Rust 30.0.1 belts, use StagingBelt::new(device.clone(), chunk_size), fill/drop views, finish, submit
+  the involved encoders, then recall and drive native progress. Use finish_and_recall_on_submit only with
+  an encoder that will actually be submitted. Do not copy older constructors/lifecycles blindly.
+
+## Transfer and binding alignment
+
+- Align buffer-copy and queue-write offsets/sizes to four bytes. Mapped creation is a separate initialization
+  path and does not require MAP_WRITE. Portable staging uses MAP_WRITE|COPY_SRC; readback uses
+  MAP_READ|COPY_DST.
+- Align mapping offsets to eight bytes and sizes to four. Keep this separate from shader member alignment
+  and device min_uniform_buffer_offset_alignment/min_storage_buffer_offset_alignment.
+- For dynamic uniforms, compute stride = round_up(device alignment, record byte size), check count*stride
+  and max_buffer_size, and check each dynamic offset fits u32 and the allocation/binding range.
+- Set has_dynamic_offset: true, the fixed record min_binding_size, and a binding of that record range,
+  not the whole allocation. An 80-byte shader record may occupy a 256-byte device-aligned slot; do not
+  declare a shader array with that stride unless its ABI explicitly matches it. Order multiple dynamic
+  offsets by increasing binding number, not descriptor array order.
+- Pad specified encoder texture-copy row pitch to 256 bytes; Queue::write_texture does not require it.
+  Compute compressed pitches and rows_per_image in texel-block rows; remove padding from CPU images.
+- Preserve channel order, numeric encoding, and copy subresource ranges.
+
+Sources: [WGSL layout][layout], [copies][copies], [dynamic buffer bindings][binding], [texel pitch][texels],
+[Pod safety][pod], [encase][encase], [staging][belt].
+
+[layout]: https://www.w3.org/TR/WGSL/#memory-layouts
+[copies]: https://www.w3.org/TR/webgpu/#copies
+[binding]: https://docs.rs/wgpu/30.0.1/wgpu/enum.BindingType.html#variant.Buffer
+[texels]: https://docs.rs/wgpu/30.0.1/wgpu/struct.TexelCopyBufferLayout.html
+[pod]: https://docs.rs/bytemuck/latest/bytemuck/trait.Pod.html#safety
+[encase]: https://docs.rs/encase/latest/encase/
+[belt]: https://docs.rs/wgpu/30.0.1/wgpu/util/struct.StagingBelt.html
