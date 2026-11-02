@@ -1,6 +1,6 @@
 ---
 name: wgpu
-description: >-
+description:
   Plan, implement, review, debug, and optimize WebGPU through Rust wgpu and WGSL.
   Use for GPU resources, CPU-to-GPU data flow, pipelines, compute, synchronization, and precision.
 ---
